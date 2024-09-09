@@ -3,21 +3,25 @@ const router = express.Router();
 const pool = require("../util/database");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
-const authenticateToken = require("../util/authenticateToken");
+const authenticateToken = require("../util/authenticateToken"); // hàm để validate jwt
 
+/*
+Route để test authenciation
+*/
 router.get("/protected", authenticateToken, (req, res) => {
-  const user = req.user; // Provided by the authenticateToken middleware
+  const user = req.user; 
   res.status(200).send(`Welcome to protected route ${user.email}`);
 });
 
-/** Signup */
+/* 
+Signup 
+*/
 router.post("/register", async function (req, res) {
   const { username, email, password } = req.body;
 
-  // check regex for password and email
+  // kiểm tra regex cho password và email
   const emailPattern = /^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$/;
   const passwordPattern = /^.{6,10}$/;
-
   if (!emailPattern.test(email)) {
     return res.status(400).json({ message: "invalid email address" });
   }
@@ -27,7 +31,7 @@ router.post("/register", async function (req, res) {
       .json({ message: "password must has between 6 and 10 characters" });
   }
 
-  // send to db
+  // mã hoá password và gửi cho database
   try {
     const encryptedPassword = await bcrypt.hash(password, 10);
 
@@ -49,42 +53,45 @@ router.post("/register", async function (req, res) {
   }
 });
 
+/* 
+Login 
+*/
 router.post("/login", async function (req, res) {
   try {
     const { email, password } = req.body;
 
-    // fetch user from db
+    // Tìm người dùng từ DB
     const sqlGetUser = " SELECT * FROM info WHERE email=?";
     const rows = await pool.query(sqlGetUser, email);
 
     if (rows.length > 0) {
       const isValid = await bcrypt.compare(password, rows[0].password);
 
-      // create jwt if login attemp is valid
+      // tạo token nếu thông tin đăng nhập thoả mãn
       if (isValid) {
-        const accessToken = jwt.sign(
+        const accessToken = jwt.sign( // tạo access token
           { username: rows[0].username, email: rows[0].email, id: rows[0].id },
           process.env.ACCESS_TOKEN_SECRET,
           { expiresIn: "1h" }
         );
-        const refreshToken = jwt.sign(
+        const refreshToken = jwt.sign( // tạo refresh token
           { username: rows[0].username, email: rows[0].email, id: rows[0].id },
           process.env.REFRESH_TOKEN_SECRET,
           { expiresIn: "7d" }
         );
 
-        //store or update the correspond regreshtk to database with active status
+        // gửi refresh token mới tạo cho DB
         try {
-          const tkDB = await pool.query(
+          const tkDB = await pool.query( // kiểm tra tồn tại
             "SELECT 1 FROM refresh_tokens WHERE user_email =? LIMIT 1",
             [rows[0].email]
           );
-          if (tkDB.length === 0) {
+          if (tkDB.length === 0) { // nếu không tồn tại => Tạo mới và lưu
             await pool.query(
               "INSERT INTO refresh_tokens (token, user_email, status) VALUES (?,?,?)",
               [refreshToken, rows[0].email, "active"]
             );
-          } else {
+          } else { // nếu tồn tại => Cập nhật
             await pool.query(
               "UPDATE refresh_tokens SET token=?, status =? WHERE user_email =?",
               [refreshToken, "active", rows[0].email]
@@ -94,6 +101,7 @@ router.post("/login", async function (req, res) {
           return res.status(500).send("Token database error");
         }
 
+        // Trả lại thông tin cho client
         res.status(200).json({
           username: rows[0].username,
           email: rows[0].email,
@@ -110,12 +118,15 @@ router.post("/login", async function (req, res) {
   }
 });
 
-router.post("/refresh", async function (req, res) {
+/* 
+Route để cấp mới refresh token và access token khi access token cũ hết hiệu lực
+*/
+router.post("/refresh", async function (req, res) { 
   const { refreshToken } = req.body;
   if (!refreshToken) {
     return res.status(400).json({ message: "Refresh token is required." });
   }
-  // check if user's refreshToken is valid
+  // kiểm tra hiệu lực của refreshToken được gửi lên
   jwt.verify(
     refreshToken,
     process.env.REFRESH_TOKEN_SECRET,
@@ -125,14 +136,14 @@ router.post("/refresh", async function (req, res) {
           .status(403)
           .json({ message: "invalid refresh token, please login again" });
       }
-      // if valid check if the refresh token is active or revoked
+      // kiểm tra trạng thái của refreshToken này trong DB
       try {
         const status = await pool.query(
           "SELECT status FROM refresh_tokens WHERE token=?",
           [refreshToken]
         );
         if (status[0].status === "active") {
-          // if the token is still active, create and store new refresh tk then issue new access tk
+          // Nếu còn hiệu lực, tạo mới refresh token và lưu vào DB với status active, tạo mới access tk và gửi cho client
           const sqlGetUser = " SELECT * FROM info WHERE email=?";
           const rows = await pool.query(sqlGetUser, decoded.email);
 
@@ -173,21 +184,24 @@ router.post("/refresh", async function (req, res) {
   );
 });
 
-router.post("/logout", async (req, res) => {
+/* 
+Logout
+*/
+router.post("/logout", async (req, res) => { // người dùng log out bằng cách gửi refresh token vào route này
   const { refreshToken } = req.body;
   if (!refreshToken) {
     return res.status(400).json({ message: "Refresh token is required." });
   }
-  jwt.verify(
+  jwt.verify( // kiểm tra hiệu lực của refresh token
     refreshToken,
     process.env.REFRESH_TOKEN_SECRET,
     async (err, decoded) => {
       if (err) {
         return res
           .status(403)
-          .json({ message: "invalid refresh token, please login again" });
+          .json({ message: "invalid refresh token, please login again to get new refresh token" });
       }
-      try {
+      try { // nếu refresh token còn hiệu lực, thực hiện log out cho client bằng cách chuyển status của refresh token đó trong DB thành revoked
         const user = await pool.query(
           "SELECT * FROM refresh_tokens WHERE token=?",
           [refreshToken]
@@ -203,7 +217,7 @@ router.post("/logout", async (req, res) => {
           return res.status(403).send("refreshToken not found");
         }
       } catch (dberr) {
-        console.error(dberr); // Log database error for debugging
+        console.error(dberr); 
         return res.status(500).json({ message: "Token database error." });
       }
       return res.status(200).json({ message: "Logged out successfully." });
