@@ -1,4 +1,4 @@
-# Minh hoạ workflow authenciation khi sử dụng jwt
+# Minh hoạ sử dụng JWT
 
 
 ## Giới thiệu
