@@ -37,13 +37,13 @@ router.post("/register", async function (req, res) {
 
     const sqlQuery =
       "INSERT INTO info (username, email, password) VALUES (?,?,?)";
-    const result = await pool.query(sqlQuery, [
+    await pool.query(sqlQuery, [
       username,
       email,
       encryptedPassword,
     ]);
 
-    res.status(201).json({ inserted: Number(result.insertId) }); // ID in mariadb is BIGINT => use Number() to convert to normal num
+    res.status(201).json({ status: "success" });
   } catch (error) {
     if (error.code === "ER_DUP_ENTRY")
       res.status(400).json({ code: 9996, message: "email used" });
@@ -65,40 +65,44 @@ router.post("/login", async function (req, res) {
     const rows = await pool.query(sqlGetUser, email);
 
     if (rows.length > 0) {
+      const {id, username, email}= rows[0]
       const isValid = await bcrypt.compare(password, rows[0].password);
 
       // tạo token nếu thông tin đăng nhập thoả mãn
       if (isValid) {
         const accessToken = jwt.sign( // tạo access token
-          { username: rows[0].username, email: rows[0].email, id: rows[0].id },
+          { username: username, email: email, id: id },
           process.env.ACCESS_TOKEN_SECRET,
           { expiresIn: "1h" }
         );
         const refreshToken = jwt.sign( // tạo refresh token
-          { username: rows[0].username, email: rows[0].email, id: rows[0].id },
+          { username: username, email: email, id: id },
           process.env.REFRESH_TOKEN_SECRET,
           { expiresIn: "7d" }
         );
 
+        
         // gửi refresh token mới tạo cho DB
         try {
           const tkDB = await pool.query( // kiểm tra tồn tại
-            "SELECT 1 FROM refresh_tokens WHERE user_email =? LIMIT 1",
-            [rows[0].email]
+            "SELECT 1 FROM refresh_tokens WHERE id =? LIMIT 1",
+            [id]
           );
+          console.log("here "+tkDB.length)
           if (tkDB.length === 0) { // nếu không tồn tại => Tạo mới và lưu
-            await pool.query(
-              "INSERT INTO refresh_tokens (token, user_email, status) VALUES (?,?,?)",
-              [refreshToken, rows[0].email, "active"]
+            const rep = await pool.query(
+              "INSERT INTO refresh_tokens (token, id, status) VALUES (?,?,?)",
+              [refreshToken, id, "active"]
             );
+            console.log(rep)
           } else { // nếu tồn tại => Cập nhật
             await pool.query(
-              "UPDATE refresh_tokens SET token=?, status =? WHERE user_email =?",
-              [refreshToken, "active", rows[0].email]
+              "UPDATE refresh_tokens SET token=?, status =? WHERE id =?",
+              [refreshToken, "active", id]
             );
           }
         } catch (dbErr) {
-          return res.status(500).send("Token database error");
+          return res.status(500).send(dbErr);
         }
 
         // Trả lại thông tin cho client
